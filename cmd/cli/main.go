@@ -8,11 +8,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var rootCmd = &cobra.Command{
+var RootCmd = &cobra.Command{
 	Use:   "",
-	Short: "Interactive RQM workflow runner",
+	Short: "",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p := tea.NewProgram(views.Root{})
+		p := tea.NewProgram(&views.Root{})
 
 		_, err := p.Run()
 		return err
@@ -20,7 +20,7 @@ var rootCmd = &cobra.Command{
 }
 
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
+	if err := RootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
