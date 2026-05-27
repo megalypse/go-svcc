@@ -7,4 +7,6 @@ type Node struct {
 	StartUpDir     string
 	EnvVarPort     string
 	OtherEnvVars   map[string]string
+	PollAttempts   int
+	RetryInterval  int
 }

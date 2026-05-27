@@ -12,16 +12,21 @@ import (
 type Root struct {
 	router    tea.Model
 	killWatch chan struct{}
+	ctx       context.Context
+	cancel    context.CancelFunc
 }
 
 func (r *Root) Init() tea.Cmd {
-	r.router = NewViewSelectCluster()
-
-	ctx, _ := signal.NotifyContext(
+	ctx, stop := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
 		syscall.SIGTERM,
 	)
+
+	r.ctx = ctx
+	r.cancel = stop
+	r.killWatch = make(chan struct{}, 1)
+	r.router = NewViewSelectCluster(ctx)
 
 	go func() {
 		<-ctx.Done()
@@ -37,12 +42,14 @@ func (r *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	select {
 	case <-r.killWatch:
+		r.cancel()
 		return r, tea.Quit
 	default:
 		switch msg := msg.(type) {
 		case tea.KeyMsg:
 			switch msg.String() {
 			case "ctrl+c":
+				r.cancel()
 				return r, tea.Quit
 			}
 		}

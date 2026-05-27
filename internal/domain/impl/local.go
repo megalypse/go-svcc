@@ -1,4 +1,4 @@
-package cluster
+package impl
 
 import (
 	"encoding/json"
