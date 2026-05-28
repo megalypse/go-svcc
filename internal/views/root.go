@@ -7,6 +7,8 @@ import (
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/megalypse/go-svc-cluster/internal/components"
 )
 
 type Root struct {
@@ -59,5 +61,5 @@ func (r *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (r *Root) View() string {
-	return r.router.View()
+	return lipgloss.NewStyle().Foreground(SuccessGreen).Render("SVCC") + components.LineSkip + r.router.View()
 }
