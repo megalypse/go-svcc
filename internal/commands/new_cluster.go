@@ -40,6 +40,14 @@ var CmdNewCluster = &cobra.Command{
 			return
 		}
 
+		if _, err := os.Stat(appPath); os.IsNotExist(err) {
+			err = os.MkdirAll(appPath, 0755)
+			if err != nil {
+				fmt.Printf("Error creating directory: %v\n", err)
+				return
+			}
+		}
+
 		// handle case where file already exists to prevent overwriting
 		if _, err := os.Stat(path); err == nil {
 			fmt.Printf("File %s already exists. Aborting to prevent overwrite.\n", path)
