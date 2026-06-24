@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/megalypse/go-svc-cluster/internal/components"
 	"github.com/megalypse/go-svc-cluster/internal/domain/impl"
 	"github.com/megalypse/go-svc-cluster/internal/domain/models"
@@ -15,9 +16,10 @@ import (
 )
 
 const (
-	maxLogLines            = 500
-	logPanelGap            = 4
-	logPanelHorizontalSize = 4
+	maxLogLines           = 500
+	logPanelGap           = 4
+	logPanelBorderWidth   = 2
+	logPanelHorizontalPad = 2
 )
 
 func NewViewStartCluster(ctx context.Context, clusterId int) *StartClusterView {
@@ -183,7 +185,7 @@ func (s *StartClusterView) clampLogScroll(nodeId int) {
 		return
 	}
 
-	maxScroll := len(s.nodeLogs[nodeId]) - s.logBodyHeight()
+	maxScroll := len(s.wrappedLogLines(nodeId, s.logContentWidth())) - s.logBodyHeight()
 	if maxScroll < 0 {
 		maxScroll = 0
 	}
@@ -205,33 +207,42 @@ func (s *StartClusterView) View() string {
 
 func (s *StartClusterView) renderServices() string {
 	render := strings.Builder{}
+	panelHeight := s.servicePanelHeight()
+	start, end := s.visibleServiceRange(panelHeight)
 
-	for i, node := range s.nodes {
-		prefix := func() string {
-			if s.nodeStatus[i] == nil || s.nodeStatus[i].Loading {
-				return lipgloss.NewStyle().Foreground(LoadingBlue).Render(s.spinner.View())
-			}
-
-			if s.nodeStatus[i].Error != nil {
-				return "X"
-			}
-
-			return lipgloss.NewStyle().Foreground(SuccessGreen).Render("✓")
-		}()
-
-		if i == s.cursor.Cursor() {
-			render.WriteString("> ")
-		} else {
-			render.WriteString("  ")
+	for i := start; i < end; i++ {
+		if i > start {
+			render.WriteString("\n")
 		}
-
-		render.WriteString(prefix)
-		render.WriteString(" ")
-		render.WriteString(node.Name)
-		render.WriteString("\n")
+		render.WriteString(s.renderServiceLine(i))
 	}
 
-	return render.String()
+	return lipgloss.NewStyle().
+		Width(s.servicePanelWidth()).
+		Height(panelHeight).
+		Render(render.String())
+}
+
+func (s *StartClusterView) renderServiceLine(nodeId int) string {
+	node := s.nodes[nodeId]
+	prefix := func() string {
+		if s.nodeStatus[nodeId] == nil || s.nodeStatus[nodeId].Loading {
+			return lipgloss.NewStyle().Foreground(LoadingBlue).Render(s.spinner.View())
+		}
+
+		if s.nodeStatus[nodeId].Error != nil {
+			return "X"
+		}
+
+		return lipgloss.NewStyle().Foreground(SuccessGreen).Render("✓")
+	}()
+
+	cursor := "  "
+	if nodeId == s.cursor.Cursor() {
+		cursor = "> "
+	}
+
+	return cursor + prefix + " " + node.Name
 }
 
 func (s *StartClusterView) renderLogs(leftPanelWidth int) string {
@@ -243,22 +254,17 @@ func (s *StartClusterView) renderLogs(leftPanelWidth int) string {
 	panelHeight := s.logPanelHeight()
 	bodyHeight := s.logBodyHeight()
 	panelWidth := s.logPanelWidth(leftPanelWidth)
-	visibleLines := s.visibleLogLines(selected, bodyHeight)
+	contentWidth := panelWidth - logPanelHorizontalPad
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+	visibleLines := s.visibleLogLines(selected, bodyHeight, contentWidth)
 
 	body := strings.Builder{}
 	if len(visibleLines) == 0 {
 		body.WriteString(lipgloss.NewStyle().Foreground(MutedGray).Render("Aguardando logs..."))
 	} else {
-		contentWidth := panelWidth - logPanelHorizontalSize
-		if contentWidth < 1 {
-			contentWidth = 1
-		}
-		for i, line := range visibleLines {
-			if i > 0 {
-				body.WriteString("\n")
-			}
-			body.WriteString(truncateLine(line, contentWidth))
-		}
+		body.WriteString(strings.Join(visibleLines, "\n"))
 	}
 
 	return lipgloss.NewStyle().
@@ -275,12 +281,12 @@ func (s *StartClusterView) renderLogs(leftPanelWidth int) string {
 		)
 }
 
-func (s *StartClusterView) visibleLogLines(nodeId int, bodyHeight int) []string {
+func (s *StartClusterView) visibleLogLines(nodeId int, bodyHeight int, contentWidth int) []string {
 	if nodeId < 0 || nodeId >= len(s.nodeLogs) || bodyHeight <= 0 {
 		return nil
 	}
 
-	logs := s.nodeLogs[nodeId]
+	logs := s.wrappedLogLines(nodeId, contentWidth)
 	if len(logs) == 0 {
 		return nil
 	}
@@ -299,12 +305,11 @@ func (s *StartClusterView) visibleLogLines(nodeId int, bodyHeight int) []string 
 }
 
 func (s *StartClusterView) logPanelHeight() int {
-	panelHeight := s.height - 4
-	if panelHeight < 8 {
-		return 16
+	if s.height < 1 {
+		return len(s.nodes)
 	}
 
-	return panelHeight
+	return s.height
 }
 
 func (s *StartClusterView) logBodyHeight() int {
@@ -317,7 +322,7 @@ func (s *StartClusterView) logBodyHeight() int {
 }
 
 func (s *StartClusterView) logPanelWidth(leftPanelWidth int) int {
-	panelWidth := s.width - leftPanelWidth - logPanelGap
+	panelWidth := s.width - leftPanelWidth - logPanelGap - logPanelBorderWidth
 	if s.width == 0 {
 		return 64
 	}
@@ -328,22 +333,67 @@ func (s *StartClusterView) logPanelWidth(leftPanelWidth int) int {
 	return panelWidth
 }
 
-func truncateLine(line string, width int) string {
-	if width < 1 {
-		return ""
-	}
-	if lipgloss.Width(line) <= width {
-		return line
+func (s *StartClusterView) logContentWidth() int {
+	contentWidth := s.logPanelWidth(s.servicePanelWidth()) - logPanelHorizontalPad
+	if contentWidth < 1 {
+		return 1
 	}
 
-	render := strings.Builder{}
-	for _, r := range line {
-		next := render.String() + string(r)
-		if lipgloss.Width(next) > width {
-			break
+	return contentWidth
+}
+
+func (s *StartClusterView) servicePanelHeight() int {
+	return s.logPanelHeight()
+}
+
+func (s *StartClusterView) servicePanelWidth() int {
+	width := 1
+	for i := range s.nodes {
+		lineWidth := lipgloss.Width(s.renderServiceLine(i))
+		if lineWidth > width {
+			width = lineWidth
 		}
-		render.WriteRune(r)
 	}
 
-	return render.String()
+	return width
+}
+
+func (s *StartClusterView) visibleServiceRange(height int) (int, int) {
+	if len(s.nodes) == 0 || height <= 0 {
+		return 0, 0
+	}
+	if height >= len(s.nodes) {
+		return 0, len(s.nodes)
+	}
+
+	selected := s.cursor.Cursor()
+	start := selected - height/2
+	if start < 0 {
+		start = 0
+	}
+
+	end := start + height
+	if end > len(s.nodes) {
+		end = len(s.nodes)
+		start = end - height
+	}
+
+	return start, end
+}
+
+func (s *StartClusterView) wrappedLogLines(nodeId int, width int) []string {
+	if nodeId < 0 || nodeId >= len(s.nodeLogs) {
+		return nil
+	}
+	if width < 1 {
+		width = 1
+	}
+
+	var lines []string
+	for _, line := range s.nodeLogs[nodeId] {
+		wrapped := strings.Split(ansi.Wrap(line, width, ""), "\n")
+		lines = append(lines, wrapped...)
+	}
+
+	return lines
 }

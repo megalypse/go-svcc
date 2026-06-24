@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -34,6 +36,7 @@ func (s *StartClusterService) StartCluster(ctx context.Context, clusterId int) <
 	clusters, _ := GetClusters()
 	cluster := clusters[clusterId]
 	clusterChan := make(chan *ClusterInfo, 64)
+	commandEnv := commandEnvironment()
 	setNodeLoading := func(nodeId int, loading bool) {
 		select {
 		case clusterChan <- &ClusterInfo{
@@ -87,6 +90,7 @@ func (s *StartClusterService) StartCluster(ctx context.Context, clusterId int) <
 				}
 
 				cmd := exec.Command("sh", "-c", fmt.Sprintf(`%scd %s && %s`, envVarsBuilder.String(), node.StartUpDir, node.StartUpCommand))
+				cmd.Env = commandEnv
 				cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 				stdout, err := cmd.StdoutPipe()
@@ -172,4 +176,57 @@ func (s *StartClusterService) StartCluster(ctx context.Context, clusterId int) <
 	}(clusterChan, clusterId)
 
 	return clusterChan
+}
+
+func commandEnvironment() []string {
+	env := os.Environ()
+	cleanPath := cleanPath(os.Getenv("PATH"), "go")
+	if cleanPath == "" {
+		return env
+	}
+
+	pathSet := false
+	for i, item := range env {
+		if strings.HasPrefix(item, "PATH=") {
+			env[i] = "PATH=" + cleanPath
+			pathSet = true
+			break
+		}
+	}
+
+	if !pathSet {
+		env = append(env, "PATH="+cleanPath)
+	}
+
+	return env
+}
+
+func cleanPath(pathValue string, commandNames ...string) string {
+	if pathValue == "" {
+		return pathValue
+	}
+
+	var cleanDirs []string
+	for _, dir := range filepath.SplitList(pathValue) {
+		if shadowsCommand(dir, commandNames...) {
+			continue
+		}
+		cleanDirs = append(cleanDirs, dir)
+	}
+
+	return strings.Join(cleanDirs, string(os.PathListSeparator))
+}
+
+func shadowsCommand(dir string, commandNames ...string) bool {
+	for _, commandName := range commandNames {
+		info, err := os.Stat(filepath.Join(dir, commandName))
+		if err != nil {
+			continue
+		}
+		if info.IsDir() || info.Mode().Perm()&0111 == 0 {
+			return true
+		}
+	}
+
+	return false
 }
