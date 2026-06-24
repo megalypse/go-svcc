@@ -1,8 +1,10 @@
 package impl
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -15,6 +17,7 @@ type ClusterInfo struct {
 	NodeId    int
 	Loading   bool
 	Error     error
+	Log       string
 }
 
 func NewStartClusterService() *StartClusterService {
@@ -30,7 +33,7 @@ type StartClusterService struct {
 func (s *StartClusterService) StartCluster(ctx context.Context, clusterId int) <-chan *ClusterInfo {
 	clusters, _ := GetClusters()
 	cluster := clusters[clusterId]
-	clusterChan := make(chan *ClusterInfo, 1)
+	clusterChan := make(chan *ClusterInfo, 64)
 	setNodeLoading := func(nodeId int, loading bool) {
 		select {
 		case clusterChan <- &ClusterInfo{
@@ -53,6 +56,27 @@ func (s *StartClusterService) StartCluster(ctx context.Context, clusterId int) <
 		}
 	}
 
+	setNodeLog := func(nodeId int, line string) {
+		select {
+		case clusterChan <- &ClusterInfo{
+			ClusterId: clusterId,
+			NodeId:    nodeId,
+			Log:       line,
+		}:
+		case <-ctx.Done():
+		}
+	}
+
+	streamLogs := func(nodeId int, reader io.Reader) {
+		scanner := bufio.NewScanner(reader)
+		for scanner.Scan() {
+			setNodeLog(nodeId, scanner.Text())
+		}
+		if err := scanner.Err(); err != nil {
+			setNodeLog(nodeId, fmt.Sprintf("log read error: %v", err))
+		}
+	}
+
 	go func(clusterChan chan<- *ClusterInfo, clusterId int) {
 		for i, node := range cluster.Nodes {
 			if err := func() error {
@@ -65,11 +89,24 @@ func (s *StartClusterService) StartCluster(ctx context.Context, clusterId int) <
 				cmd := exec.Command("sh", "-c", fmt.Sprintf(`%scd %s && %s`, envVarsBuilder.String(), node.StartUpDir, node.StartUpCommand))
 				cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
+				stdout, err := cmd.StdoutPipe()
+				if err != nil {
+					return err
+				}
+
+				stderr, err := cmd.StderrPipe()
+				if err != nil {
+					return err
+				}
+
 				go func() {
 					if err := cmd.Start(); err != nil {
 						setNodeError(i, err)
 						return
 					}
+
+					go streamLogs(i, stdout)
+					go streamLogs(i, stderr)
 
 					done := make(chan error, 1)
 					go func() {
