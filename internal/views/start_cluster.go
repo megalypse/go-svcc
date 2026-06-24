@@ -135,6 +135,9 @@ func (s *StartClusterView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "up", "k", "down", "j":
 			s.cursor.Update(msg)
 			return s, nil
+		case "x":
+			s.stopSelectedNode()
+			return s, nil
 		case "pgup", "ctrl+u":
 			s.scrollSelectedLogs(s.logBodyHeight())
 			return s, nil
@@ -155,6 +158,7 @@ func (s *StartClusterView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 var LoadingBlue = lipgloss.Color("#4287f5")
 var SuccessGreen = lipgloss.Color("#16fa0a")
+var FailureRed = lipgloss.Color("#ff4d4d")
 var MutedGray = lipgloss.Color("#6c747d")
 
 func (s *StartClusterView) appendLog(nodeId int, line string) {
@@ -178,6 +182,21 @@ func (s *StartClusterView) scrollSelectedLogs(delta int) {
 
 	s.nodeLogScrollBottom[selected] += delta
 	s.clampLogScroll(selected)
+}
+
+func (s *StartClusterView) stopSelectedNode() {
+	selected := s.cursor.Cursor()
+	if selected < 0 || selected >= len(s.nodes) {
+		return
+	}
+
+	err := factory.GetServiceStartCluster().StopNode(s.clusterId, selected)
+	if err != nil {
+		s.appendLog(selected, fmt.Sprintf("stop failed: %v", err))
+		return
+	}
+
+	s.appendLog(selected, "stop requested")
 }
 
 func (s *StartClusterView) clampLogScroll(nodeId int) {
@@ -231,7 +250,7 @@ func (s *StartClusterView) renderServiceLine(nodeId int) string {
 		}
 
 		if s.nodeStatus[nodeId].Error != nil {
-			return "X"
+			return lipgloss.NewStyle().Foreground(FailureRed).Render("X")
 		}
 
 		return lipgloss.NewStyle().Foreground(SuccessGreen).Render("✓")

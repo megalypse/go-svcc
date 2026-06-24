@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -25,11 +26,19 @@ type ClusterInfo struct {
 func NewStartClusterService() *StartClusterService {
 	return &StartClusterService{
 		runningClusters: []int{},
+		runningNodes:    map[nodeKey]*exec.Cmd{},
 	}
 }
 
 type StartClusterService struct {
 	runningClusters []int
+	runningNodes    map[nodeKey]*exec.Cmd
+	mu              sync.Mutex
+}
+
+type nodeKey struct {
+	clusterId int
+	nodeId    int
 }
 
 func (s *StartClusterService) StartCluster(ctx context.Context, clusterId int) <-chan *ClusterInfo {
@@ -108,6 +117,8 @@ func (s *StartClusterService) StartCluster(ctx context.Context, clusterId int) <
 						setNodeError(i, err)
 						return
 					}
+					s.setRunningNode(clusterId, i, cmd)
+					defer s.removeRunningNode(clusterId, i, cmd)
 
 					go streamLogs(i, stdout)
 					go streamLogs(i, stderr)
@@ -176,6 +187,39 @@ func (s *StartClusterService) StartCluster(ctx context.Context, clusterId int) <
 	}(clusterChan, clusterId)
 
 	return clusterChan
+}
+
+func (s *StartClusterService) StopNode(clusterId int, nodeId int) error {
+	s.mu.Lock()
+	cmd := s.runningNodes[nodeKey{clusterId: clusterId, nodeId: nodeId}]
+	s.mu.Unlock()
+
+	if cmd == nil || cmd.Process == nil {
+		return fmt.Errorf("node %d is not running", nodeId)
+	}
+
+	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM); err != nil {
+		return fmt.Errorf("failed to stop node %d: %w", nodeId, err)
+	}
+
+	return nil
+}
+
+func (s *StartClusterService) setRunningNode(clusterId int, nodeId int, cmd *exec.Cmd) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.runningNodes[nodeKey{clusterId: clusterId, nodeId: nodeId}] = cmd
+}
+
+func (s *StartClusterService) removeRunningNode(clusterId int, nodeId int, cmd *exec.Cmd) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := nodeKey{clusterId: clusterId, nodeId: nodeId}
+	if s.runningNodes[key] == cmd {
+		delete(s.runningNodes, key)
+	}
 }
 
 func commandEnvironment() []string {
